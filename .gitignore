@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# DSPy cache
+dspy_cache*/
+
+# Logs & generated files
+*.jsonl
+optimized_module*.json
+
+# OS
+.DS_Store
+Thumbs.db
