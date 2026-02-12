@@ -47,6 +47,7 @@ CITY_TO_POSTAL = {
         "düsseldorf": "40213",
         "leipzig": "04109",
         "dortmund": "44135",
+        "borken": "48455",
     },
     "AT": {
         "wien": "1010",
@@ -59,6 +60,7 @@ CITY_TO_POSTAL = {
         "wels": "4600",
         "st. pölten": "3100",
         "st poelten": "3100",
+        
     },
     "CH": {
         "zürich": "8001",

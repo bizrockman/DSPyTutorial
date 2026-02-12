@@ -1,8 +1,4 @@
-# agent_runner.py
-# pip install requests pydantic
-
 import json
-import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple, Literal
 
@@ -119,7 +115,7 @@ def call_tool(openapi_base: str, trace_id: str, tool_name: str, args: dict) -> d
 
 
 # ----------------- Prompts -----------------
-SYSTEM = """You are a shipping quote agent. Your goal: provide accurate shipping quotes for the user.
+SYSTEM_1 = """You are a shipping quote agent. Your goal: provide accurate shipping quotes for the user.
 
 WORKFLOW:
 1. If you see a country NAME (like "Germany", "Deutschland") -> call resolve_country to get ISO2 code
@@ -127,7 +123,7 @@ WORKFLOW:
 3. Once you have ISO2 country AND postal code -> call get_shipping_quote
 
 OUTPUT FORMAT:
-Output ONLY JSON objects (only multiple get_shipping_quote objects are allowed otherwise one object ONLY). No text outside JSON.
+Output ONLY JSON objects (one or multiple per line). No text outside JSON.
 
 AVAILABLE TOOLS:
 - resolve_country: {"tool_name":"resolve_country","args":{"name":"Deutschland"}}
@@ -141,11 +137,36 @@ RULES:
 - You have at most 3 rounds to produce at least one successful get_shipping_quote call.
 """
 
+SYSTEM_2 = """You are a shipping quote agent. Your goal: provide accurate shipping quotes for the user.
 
-def run_agentic(user_text: str, llm_api_base: str, llm_api_key: str, llm_model: str, openapi_base: str, max_rounds: int = 3):
+WORKFLOW:
+1. If you see a country NAME (like "Germany", "Deutschland") -> call resolve_country to get ISO2 code
+2. If you have ISO2 but no postal code -> call resolve_postal_code(mode="lookup_city", country="DE", city="Berlin")
+3. Once you have ISO2 country AND postal code -> call get_shipping_quote
+
+OUTPUT FORMAT:
+Output ONLY JSON objects (only multiple get_shipping_quote objects are allowed otherwise one object ONLY. Call Resolver 
+only if needed, if you know all arguments for get_shipping_quote, call it directly.). No text outside JSON.
+
+AVAILABLE TOOLS:
+- resolve_country: {"tool_name":"resolve_country","args":{"name":"Deutschland"}}
+- resolve_postal_code: {"tool_name":"resolve_postal_code","args":{"mode":"lookup_city","country":"DE","city":"Berlin"}}
+- get_shipping_quote: {"tool_name":"get_shipping_quote","args":{"country":"DE","postal_code":"10115","weight_kg":1.0,"service":"express"}}
+
+RULES:
+- Do NOT guess postal codes or country codes. Use resolver tools first.
+- For multiple shipments, process them step by step.
+- Always use the VALUES from previous tool results (e.g., if resolve_country returned "DE", use country="DE").
+- You have at most 3 rounds to produce at least one successful get_shipping_quote call.
+"""
+
+# Set the system prompt here
+def run_agentic(user_text: str, llm_api_base: str, llm_api_key: str, llm_model: str, openapi_base: str, 
+        max_rounds: int = 3, system_prompt: str = SYSTEM_2):    
+
     trace_id = str(uuid.uuid4())
     messages = [
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"USER_REQUEST:\n{user_text}"},
     ]
 
@@ -154,7 +175,7 @@ def run_agentic(user_text: str, llm_api_base: str, llm_api_key: str, llm_model: 
 
     for round_idx in range(1, max_rounds + 1):
         raw = chat(llm_api_base, llm_api_key, llm_model, messages, temperature=0.0)
-        objs = extract_json_objects(raw)
+        objs = extract_json_objects(raw)        
 
         tool_results_this_round = []
         bad_objects = 0
@@ -175,23 +196,26 @@ def run_agentic(user_text: str, llm_api_base: str, llm_api_key: str, llm_model: 
                     tool_results_this_round.append({"tool": "resolve_country", "error": e.errors()[:2], "args": tc.args})
                     continue
 
-            if tc.tool_name == "resolve_postal_code":
+            elif tc.tool_name == "resolve_postal_code":
                 try:
                     ResolverPostalArgs.model_validate(tc.args)
                 except ValidationError as e:
                     tool_results_this_round.append({"tool": "resolve_postal_code", "error": e.errors()[:2], "args": tc.args})
                     continue
 
-            if tc.tool_name == "get_shipping_quote":
+            elif tc.tool_name == "get_shipping_quote":
                 try:
                     QuoteArgs.model_validate(tc.args)
                 except ValidationError as e:
                     tool_results_this_round.append({"tool": "get_shipping_quote", "error": e.errors()[:2], "args": tc.args})
                     continue
+            else:
+                tool_results_this_round.append({"error": "unknown_tool", "raw_obj": obj})
+                continue
 
             res = call_tool(openapi_base, trace_id, tc.tool_name, tc.args)
 
-            event = {"tool_name": tc.tool_name, "args": tc.args, "result": res}
+            event = {"tool_name": tc.tool_name, "args": tc.args, "result": res, "round": round_idx}
             tool_history.append(event)
             tool_results_this_round.append(event)
 
@@ -226,29 +250,36 @@ def run_agentic(user_text: str, llm_api_base: str, llm_api_key: str, llm_model: 
 
 
 def print_compact(prompt: str, result: dict) -> None:
-    """Kompakte Ausgabe für Tests."""
+    """Compact output for tests with grouping by rounds."""
     print(f"TestCase: {prompt}")
     
+    current_round = None
     for call in result.get("tool_history", []):
+        # Show round header if new round starts
+        r = call.get("round")
+        if r is not None and r != current_round:
+            current_round = r
+            print(f"  Round {r}:")
+        
         tool = call["tool_name"]
         args = call["args"]
         args_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
-        print(f"  LLM calls {tool}({args_str})")
+        print(f"    LLM calls {tool}({args_str})")
         
         res = call.get("result", {})
         http = res.get("http", "?")
         json_res = res.get("json", {})
-        # Kompakte Darstellung des Ergebnisses
+        # Compact representation of the result
         if "error" in json_res and json_res["error"]:
-            print(f"  API Result: HTTP {http} -> error={json_res['error']}")
+            print(f"    API Result: HTTP {http} -> error={json_res['error']}")
         elif "price" in json_res:
-            print(f"  API Result: HTTP {http} -> {json_res['price']} {json_res.get('currency', 'EUR')}")
+            print(f"    API Result: HTTP {http} -> {json_res['price']} {json_res.get('currency', 'EUR')}")
         elif "iso2" in json_res:
-            print(f"  API Result: HTTP {http} -> {json_res['iso2']}")
+            print(f"    API Result: HTTP {http} -> {json_res['iso2']}")
         elif "postal_code" in json_res:
-            print(f"  API Result: HTTP {http} -> {json_res['postal_code']} ({json_res.get('city', '')})")
+            print(f"    API Result: HTTP {http} -> {json_res['postal_code']} ({json_res.get('city', '')})")
         else:
-            print(f"  API Result: HTTP {http} -> {json_res}")
+            print(f"    API Result: HTTP {http} -> {json_res}")
     
     status = "OK" if result.get("ok") else f"FAILED: {result.get('error', 'unknown')}"
     rounds = result.get("rounds_used", "?")
@@ -265,12 +296,12 @@ if __name__ == "__main__":
 
     tests = [
         "Schick das nach Deutschland, Berlin, 1 kg, express.",
-        "Einmal nach Deutschland Berlin 1 kg express und einmal nach Österreich Wien 1 kg standard.",
+        "Einmal nach Deutschland Borken 1 kg express und einmal nach Österreich Wien 1 kg standard.",
         "Versand nach FR Paris 2 kg standard.",
     ]
 
     for t in tests:
         out = run_agentic(t, LLM_API_BASE, LLM_API_KEY, LLM_MODEL, OPENAPI_BASE)
         print_compact(t, out)
-        # Für Debugging: Vollständiges JSON in Datei loggen
-        log_jsonl("runs.jsonl", out)
+        # For debugging: log the complete JSON output to a file
+        log_jsonl("runner_runs.jsonl", out)

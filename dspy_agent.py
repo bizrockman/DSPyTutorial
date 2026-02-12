@@ -116,7 +116,7 @@ if __name__ == "__main__":
     # Testfälle
     tests = [
         "Schick das nach Deutschland, Berlin, 1 kg, express.",
-        "Einmal nach Deutschland Berlin 1 kg express und einmal nach Österreich Wien 1 kg standard.",
+        "Einmal nach Deutschland Borken 1 kg express und einmal nach Österreich Wien 1 kg standard.",
         "Versand nach FR Paris 2 kg standard.",
     ]
 
